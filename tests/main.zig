@@ -3,6 +3,8 @@ const terminal = @import("zig-terminal");
 pub fn main() !void {
     var term = terminal.Terminal.init();
 
+    var haze = "Haze";
+
     try term.printWithAttributes(.{
         terminal.TextAttributes{
             .foreground = .red,
@@ -22,7 +24,7 @@ pub fn main() !void {
         },
         "Hello, World!\n",
         .magenta,
-        .{ "Hello, {s}!\n", .{"Haze"} },
+        terminal.format("Hello, {s}!\n", .{haze}),
         .reset,
         "Hello, World!\n",
     });

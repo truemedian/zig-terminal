@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const math = std.math;
 const meta = std.meta;
 const fs = std.fs;
 
@@ -25,6 +26,26 @@ pub const TextAttributes = struct {
     underline: bool = false,
     reverse: bool = false,
 };
+
+pub fn FormatType(comptime fmt: []const u8, comptime Tuple: type) type {
+    assert(trait.isTuple(Tuple));
+
+    return struct {
+        comptime format: []const u8 = fmt,
+        args: Tuple,
+    };
+}
+
+fn isFormat(comptime T: type) bool {
+    return trait.is(.Struct)(T) and trait.hasFields(T, .{ "format", "args" });
+}
+
+pub fn format(comptime fmt: []const u8, args: anytype) FormatType(fmt, @TypeOf(args)) {
+    return FormatType(fmt, @TypeOf(args)){
+        .format = fmt,
+        .args = args,
+    };
+}
 
 const is_windows = std.Target.current.os.tag == .windows;
 
@@ -91,6 +112,60 @@ pub const Terminal = struct {
         return try ansi.resetAttributes(self);
     }
 
+    pub fn switchToAltBuffer(self: *Terminal) !void {
+        if (is_windows and self.interface == .winconsole) return try windows.switchToAltBuffer(self);
+
+        return try ansi.switchToAltBuffer(self);
+    }
+
+    pub fn switchToMainBuffer(self: *Terminal) !void {
+        if (is_windows and self.interface == .winconsole) return try windows.switchToMainBuffer(self);
+
+        return try ansi.switchToMainBuffer(self);
+    }
+
+    pub fn cursorMoveUp(self: *Terminal, num: u16) !void {
+        if (is_windows and self.interface == .winconsole) return try windows.cursorMoveUp(self, num);
+
+        return try ansi.cursorMoveUp(self, num);
+    }
+
+    pub fn cursorMoveDown(self: *Terminal, num: u16) !void {
+        if (is_windows and self.interface == .winconsole) return try windows.cursorMoveDown(self, num);
+
+        return try ansi.cursorMoveDown(self, num);
+    }
+
+    pub fn cursorMoveRight(self: *Terminal, num: u16) !void {
+        if (is_windows and self.interface == .winconsole) return try windows.cursorMoveRight(self, num);
+
+        return try ansi.cursorMoveRight(self, num);
+    }
+
+    pub fn cursorMoveLeft(self: *Terminal, num: u16) !void {
+        if (is_windows and self.interface == .winconsole) return try windows.cursorMoveLeft(self, num);
+
+        return try ansi.cursorMoveLeft(self, num);
+    }
+
+    pub fn setCursorColumn(self: *Terminal, col: u16) !void {
+        if (is_windows and self.interface == .winconsole) return try windows.setCursorColumn(self, col);
+
+        return try ansi.setCursorColumn(self, col);
+    }
+
+    pub fn setCursorRow(self: *Terminal, row: u16) !void {
+        if (is_windows and self.interface == .winconsole) return try windows.setCursorRow(self, row);
+
+        return try ansi.setCursorRow(self, row);
+    }
+
+    pub fn setCursorPosition(self: *Terminal, x: u16, y: u16) !void {
+        if (is_windows and self.interface == .winconsole) return try windows.setCursorPosition(self, x, y);
+
+        return try ansi.setCursorPosition(self, x, y);
+    }
+
     pub fn printWithAttributes(self: *Terminal, args: anytype) !void {
         comptime var i = 0;
 
@@ -131,6 +206,11 @@ pub const Terminal = struct {
                                 continue;
                             }
 
+                            if (comptime isFormat(T)) {
+                                try self.writer().print(arg.format, arg.args);
+                                continue;
+                            }
+
                             var attr = TextAttributes{};
 
                             const fields = meta.fields(T);
@@ -167,12 +247,13 @@ pub const windows = struct {
     const HANDLE = win.HANDLE;
     const WINAPI = win.WINAPI;
 
-    pub extern "kernel32" fn GetConsoleMode(hConsole: HANDLE, mode: *u32) callconv(WINAPI) c_int;
-    pub extern "kernel32" fn SetConsoleMode(hConsole: HANDLE, mode: u32) callconv(WINAPI) c_int;
-    pub extern "kernel32" fn GetConsoleScreenBufferInfo(hConsole: HANDLE, consoleScreenBufferInfo: *win.CONSOLE_SCREEN_BUFFER_INFO) callconv(WINAPI) c_int;
-    pub extern "kernel32" fn SetConsoleTextAttribute(hConsole: HANDLE, attributes: u32) callconv(WINAPI) c_int;
+    extern "kernel32" fn GetConsoleMode(hConsole: HANDLE, mode: *u16) callconv(WINAPI) c_int;
+    extern "kernel32" fn SetConsoleMode(hConsole: HANDLE, mode: u16) callconv(WINAPI) c_int;
+    extern "kernel32" fn GetConsoleScreenBufferInfo(hConsole: HANDLE, consoleScreenBufferInfo: *win.CONSOLE_SCREEN_BUFFER_INFO) callconv(WINAPI) c_int;
+    extern "kernel32" fn SetConsoleTextAttribute(hConsole: HANDLE, attributes: u16) callconv(WINAPI) c_int;
+    extern "kernel32" fn SetConsoleCursorPosition(hConsole: HANDLE, cursorPosition: win.COORD) callconv(WINAPI) c_int;
 
-    var last_attribute: u32 = 0;
+    var last_attribute: u16 = 0;
 
     const FG_RED = win.FOREGROUND_RED;
     const FG_GREEN = win.FOREGROUND_GREEN;
@@ -189,8 +270,8 @@ pub const windows = struct {
     const stdin_mode_request = ENABLE_VIRTUAL_TERMINAL_INPUT;
 
     fn tryPromoteVirtual(stdin: std.fs.File, stdout: std.fs.File) bool {
-        var stdout_mode: u32 = 0;
-        var stdin_mode: u32 = 0;
+        var stdout_mode: u16 = 0;
+        var stdin_mode: u16 = 0;
 
         if (GetConsoleMode(stdout.handle, &stdout_mode) == 0) return false;
         if (GetConsoleMode(stdin.handle, &stdin_mode) == 0) return false;
@@ -206,7 +287,7 @@ pub const windows = struct {
         return true;
     }
 
-    fn attrToWord(attr: TextAttributes) u32 {
+    fn attrToWord(attr: TextAttributes) u16 {
         var base = if (attr.bright or attr.bold) FG_INTENSE else 0;
 
         if (attr.reverse) base |= TXT_REVERSE;
@@ -233,11 +314,89 @@ pub const windows = struct {
     pub fn resetAttributes(term: *const Terminal) !void {
         try applyAttribute(term, .{});
     }
+
+    pub fn switchToAltBuffer(_: *const Terminal) !void {}
+    pub fn switchToMainBuffer(_: *const Terminal) !void {}
+
+    pub fn cursorMoveUp(term: *const Terminal, n: u16) !void {
+        var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+
+        if (GetConsoleScreenBufferInfo(term.stdout.handle, &info) == 0) return error.Unexpected;
+
+        var cursor = info.dwCursorPosition;
+        cursor.Y -= n;
+
+        if (SetConsoleCursorPosition(term.stdout.handle, cursor) == 0) return error.Unexpected;
+    }
+
+    pub fn cursorMoveDown(term: *const Terminal, n: u16) !void {
+        var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+
+        if (GetConsoleScreenBufferInfo(term.stdout.handle, &info) == 0) return error.Unexpected;
+
+        var cursor = info.dwCursorPosition;
+        cursor.Y += n;
+
+        if (SetConsoleCursorPosition(term.stdout.handle, cursor) == 0) return error.Unexpected;
+    }
+
+    pub fn cursorMoveRight(term: *const Terminal, n: u16) !void {
+        var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+
+        if (GetConsoleScreenBufferInfo(term.stdout.handle, &info) == 0) return error.Unexpected;
+
+        var cursor = info.dwCursorPosition;
+        cursor.X += n;
+
+        if (SetConsoleCursorPosition(term.stdout.handle, cursor) == 0) return error.Unexpected;
+    }
+
+    pub fn cursorMoveLeft(term: *const Terminal, n: u16) !void {
+        var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+
+        if (GetConsoleScreenBufferInfo(term.stdout.handle, &info) == 0) return error.Unexpected;
+
+        var cursor = info.dwCursorPosition;
+        cursor.X -= n;
+
+        if (SetConsoleCursorPosition(term.stdout.handle, cursor) == 0) return error.Unexpected;
+    }
+
+    pub fn setCursorColumn(term: *const Terminal, col: u16) !void {
+        var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+
+        if (GetConsoleScreenBufferInfo(term.stdout.handle, &info) == 0) return error.Unexpected;
+
+        var cursor = info.dwCursorPosition;
+        cursor.X = col;
+
+        if (SetConsoleCursorPosition(term.stdout.handle, cursor) == 0) return error.Unexpected;
+    }
+
+    pub fn setCursorRow(term: *const Terminal, row: u16) !void {
+        var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+
+        if (GetConsoleScreenBufferInfo(term.stdout.handle, &info) == 0) return error.Unexpected;
+
+        var cursor = info.dwCursorPosition;
+        cursor.Y = row;
+
+        if (SetConsoleCursorPosition(term.stdout.handle, cursor) == 0) return error.Unexpected;
+    }
+
+    pub fn setCursorPosition(term: *const Terminal, x: u16, y: u16) !void {
+        const cursor = win.COORD{
+            .X = x,
+            .Y = y,
+        };
+
+        if (SetConsoleCursorPosition(term.stdout.handle, cursor) == 0) return error.Unexpected;
+    }
 };
 
 pub const ansi = struct {
-    fn attrToSgr(attr: TextAttributes) u32 {
-        const base: u32 = if (attr.bright) 90 else 30;
+    fn attrToSgr(attr: TextAttributes) u16 {
+        const base: u16 = if (attr.bright) 90 else 30;
 
         return switch (attr.foreground) {
             .black => base,
@@ -262,5 +421,41 @@ pub const ansi = struct {
 
     pub fn resetAttributes(term: *const Terminal) !void {
         try term.stdout.writeAll("\x1b[0m");
+    }
+
+    pub fn switchToAltBuffer(term: *const Terminal) !void {
+        try term.stdout.writeAll("\x1b[?1049h");
+    }
+
+    pub fn switchToMainBuffer(term: *const Terminal) !void {
+        try term.stdout.writeAll("\x1b[?1049l");
+    }
+
+    pub fn cursorMoveUp(term: *const Terminal, n: u16) !void {
+        try term.stdout.writeAll("\x1b[{d}A", n);
+    }
+
+    pub fn cursorMoveDown(term: *const Terminal, n: u16) !void {
+        try term.stdout.writeAll("\x1b[{d}B", n);
+    }
+
+    pub fn cursorMoveRight(term: *const Terminal, n: u16) !void {
+        try term.stdout.writeAll("\x1b[{d}C", n);
+    }
+
+    pub fn cursorMoveLeft(term: *const Terminal, n: u16) !void {
+        try term.stdout.writeAll("\x1b[{d}D", n);
+    }
+
+    pub fn setCursorColumn(term: *const Terminal, col: u16) !void {
+        try term.stdout.writeAll("\x1b[{d}G", col);
+    }
+
+    pub fn setCursorRow(term: *const Terminal, row: u16) !void {
+        try term.stdout.writeAll("\x1b[{d}f", row);
+    }
+
+    pub fn setCursorPosition(term: *const Terminal, x: u16, y: u16) !void {
+        try term.stdout.writeAll("\x1b[{d};{d}H", y, x);
     }
 };
