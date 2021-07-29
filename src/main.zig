@@ -3,6 +3,7 @@ const std = @import("std");
 const math = std.math;
 const meta = std.meta;
 const fs = std.fs;
+const os = std.os;
 
 const assert = std.debug.assert;
 const trait = meta.trait;
@@ -25,6 +26,11 @@ pub const TextAttributes = struct {
     bold: bool = false,
     underline: bool = false,
     reverse: bool = false,
+};
+
+pub const TerminalSize = struct {
+    width: u16,
+    height: u16,
 };
 
 pub fn FormatType(comptime fmt: []const u8, comptime Tuple: type) type {
@@ -68,6 +74,8 @@ pub const Terminal = struct {
     enable_attributes: bool = true,
     current_attribute: TextAttributes = TextAttributes{},
 
+    window_size: TerminalSize,
+
     pub fn init() Terminal {
         const stdin = std.io.getStdIn();
         const stdout = std.io.getStdOut();
@@ -99,6 +107,8 @@ pub const Terminal = struct {
     pub fn applyAttribute(self: *Terminal, attr: TextAttributes) !void {
         self.current_attribute = attr;
 
+        if (!self.enable_attributes) return;
+
         if (is_windows and self.interface == .winconsole) return try windows.applyAttribute(self, attr);
 
         return try ansi.applyAttribute(self, attr);
@@ -106,6 +116,8 @@ pub const Terminal = struct {
 
     pub fn resetAttributes(self: *Terminal) !void {
         self.current_attribute = .{};
+
+        if (!self.enable_attributes) return;
 
         if (is_windows and self.interface == .winconsole) return try windows.resetAttributes(self);
 
@@ -164,6 +176,12 @@ pub const Terminal = struct {
         if (is_windows and self.interface == .winconsole) return try windows.setCursorPosition(self, x, y);
 
         return try ansi.setCursorPosition(self, x, y);
+    }
+
+    pub fn getTerminalSize(self: *Terminal) !TerminalSize {
+        if (is_windows) return try windows.getTerminalSize(self);
+
+        return try ioctl.getTerminalSize(self);
     }
 
     pub fn printWithAttributes(self: *Terminal, args: anytype) !void {
@@ -392,6 +410,17 @@ pub const windows = struct {
 
         if (SetConsoleCursorPosition(term.stdout.handle, cursor) == 0) return error.Unexpected;
     }
+
+    pub fn getTerminalSize(term: *const Terminal) !TerminalSize {
+        var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+
+        if (GetConsoleScreenBufferInfo(term.stdout.handle, &info) == 0) return error.Unexpected;
+
+        return TerminalSize{
+            .width = info.dwSize.X,
+            .height = info.dwSize.Y,
+        };
+    }
 };
 
 pub const ansi = struct {
@@ -457,5 +486,22 @@ pub const ansi = struct {
 
     pub fn setCursorPosition(term: *const Terminal, x: u16, y: u16) !void {
         try term.stdout.writeAll("\x1b[{d};{d}H", y, x);
+    }
+};
+
+pub const ioctl = struct {
+    pub fn getTerminalSize(term: *const Terminal) !TerminalSize {
+        var size: os.winsize = undefined;
+        switch (os.errno(os.ioctl(term.stdout.handle, os.TIOCGWINSZ, @ptrToInt(&size)))) {
+            0 => return TerminalSize{
+                .width = size.ws_col,
+                .height = size.ws_row,
+            },
+            os.EBADF => unreachable,
+            os.EFAULT => unreachable,
+            os.EINVAL => return error.Unsupported,
+            os.ENOTTY => return error.Unsupported,
+            else => |err| return os.unexpectedErrno(err),
+        }
     }
 };
